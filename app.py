@@ -1,4 +1,4 @@
-# app.py
+
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -47,14 +47,15 @@ def pick_numbers(strategy, pool, recent_draws=None):
     else:
         return random.sample(range(1, 101), 3)
 
-# Simulate with player types and adaptive logic
-def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonus, strategy_dist, adaptive_memory):
+# Simulate with player types, adaptive logic, and draw mode
+def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds,
+             bonus, strategy_dist, adaptive_memory, weighted_draw):
     payouts = {1: payout1, 2: payout2, 3: payout3}
-    number_pool = np.arange(1, 101)
     strategies = []
     player_pools = []
     recent_draws = []
 
+    # Assign strategies and pools
     for strategy, pct in strategy_dist.items():
         count = int(num_players * pct / 100)
         for _ in range(count):
@@ -71,7 +72,17 @@ def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonu
     round_summary = []
 
     for rnd in range(1, num_rounds + 1):
-        draw = random.sample(range(1, 101), 9)
+        # Weighted or random draw
+        if weighted_draw:
+            weights = [2 if 1 <= i <= 20 else 1 for i in range(1, 101)]
+            draw = random.choices(range(1, 101), weights=weights, k=9)
+            draw = list(dict.fromkeys(draw))
+            while len(draw) < 9:
+                candidates = [i for i in range(1, 101) if i not in draw]
+                draw.append(random.choice(candidates))
+        else:
+            draw = random.sample(range(1, 101), 9)
+
         recent_draws.append(draw)
         if len(recent_draws) > adaptive_memory:
             recent_draws.pop(0)
@@ -79,8 +90,8 @@ def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonu
         round_profit = 0
         for i in range(num_players):
             picks = pick_numbers(strategies[i], player_pools[i], recent_draws)
-            match = len(set(picks) & set(draw))
-            reward = payouts.get(match, 0)
+            match_count = len(set(picks) & set(draw))
+            reward = payouts.get(match_count, 0)
             if bonus and rnd % 5 == 0:
                 reward *= 1.2
             net = reward - entry_fee
@@ -94,31 +105,37 @@ def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonu
             "House Edge (%)": round((-round_profit / (num_players * entry_fee)) * 100, 2)
         })
 
-    summary = {
+    # Build summary
+    base_summary = {
         "Total Rounds": num_rounds,
         "Players": num_players,
         "Total Spent (₹)": num_players * num_rounds * entry_fee,
         "Total Returned (₹)": round(profits.sum() + num_players * num_rounds * entry_fee, 2),
         "Net House Profit (₹)": round(-(profits.sum()), 2),
         "Avg Profit per Player (₹)": round(profits.mean(), 2),
-        "Expected Value per Ticket (₹)": round((calculate_probabilities()["1 Match"] * payout1 + calculate_probabilities()["2 Matches"] * payout2 + calculate_probabilities()["3 Matches"] * payout3) - entry_fee, 2),
+        "Expected Value per Ticket (₹)": round(
+            (calculate_probabilities()["1 Match"] * payout1 +
+             calculate_probabilities()["2 Matches"] * payout2 +
+             calculate_probabilities()["3 Matches"] * payout3) - entry_fee, 2),
         "Actual Avg Return per Ticket (₹)": round(profits.sum() / (num_players * num_rounds), 2),
     }
-    for k in strategy_profit:
-        summary[f"Avg Profit - {k}"] = round(np.mean(strategy_profit[k]), 2) if strategy_profit[k] else 0
+    for strat, plist in strategy_profit.items():
+        base_summary[f"Avg Profit - {strat}"] = round(np.mean(plist), 2) if plist else 0
 
-    return pd.DataFrame([summary]), profits, pd.DataFrame(round_summary)
+    return pd.DataFrame([base_summary]), profits, pd.DataFrame(round_summary)
 
 # Streamlit UI
-st.title("🎯 Number Draw Simulator with Strategy Behaviors")
+st.title("🎯 Number Draw Simulator with Strategy Behaviors & Weighted Draw")
 
 with st.expander("ℹ️ Match Probability Reference"):
     st.write(pd.DataFrame(calculate_probabilities().items(), columns=["Match Count", "Probability"]))
 
+# Load and select presets
 presets = load_presets()
-selected = st.sidebar.selectbox("Choose Preset", list(presets.keys()))
-preset = presets[selected]
+selected_preset = st.sidebar.selectbox("Choose Preset", list(presets.keys()))
+preset = presets[selected_preset]
 
+# Strategy distribution sliders
 st.sidebar.subheader("🧠 Player Strategy Distribution (%)")
 strategy_dist = {
     "fixed": st.sidebar.slider("Fixed", 0, 100, 20),
@@ -127,9 +144,7 @@ strategy_dist = {
     "random": st.sidebar.slider("Random", 0, 100, 20),
     "pattern": st.sidebar.slider("Pattern", 0, 100, 20)
 }
-total_pct = sum(strategy_dist.values())
-
-if total_pct != 100:
+if sum(strategy_dist.values()) != 100:
     st.sidebar.error("Strategy percentages must sum to 100%")
 
 adaptive_memory = st.sidebar.number_input("Adaptive Memory (Rounds)", min_value=1, max_value=20, value=5)
@@ -142,36 +157,69 @@ with st.form("sim_form"):
     num_players = st.number_input("Number of Players", value=1000)
     num_rounds = st.number_input("Number of Rounds", value=100)
     bonus = st.checkbox("Enable 20% Bonus every 5th round")
+    weighted_draw = st.checkbox("Use Weighted/Favoured Draw (1-20 double weight)")
     col1, col2 = st.columns(2)
-    submitted = col1.form_submit_button("Run Simulation")
+    run = col1.form_submit_button("Run Simulation")
     save_preset = col2.form_submit_button("💾 Save As Preset")
 
+# Save preset
 if save_preset:
-    name = st.text_input("Enter name for new preset", key="preset_name")
-    if name:
-        presets[name] = {"entry": entry_fee, "p1": payout1, "p2": payout2, "p3": payout3}
+    preset_name = st.text_input("Enter name for new preset", key="new_preset")
+    if preset_name:
+        presets[preset_name] = {"entry": entry_fee, "p1": payout1, "p2": payout2, "p3": payout3}
         save_presets(presets)
-        st.toast(f"Preset '{name}' saved successfully.", icon="💾")
+        st.toast(f"Preset '{preset_name}' saved.", icon="💾")
 
-if submitted and total_pct == 100:
+# Run simulation
+if run and sum(strategy_dist.values()) == 100:
     st.info("Running simulation... please wait ⏳")
-    summary_df, profits_array, round_df = simulate(entry_fee, payout1, payout2, payout3, int(num_players), int(num_rounds), bonus, strategy_dist, adaptive_memory)
+    summary_rand, profits_rand, rounds_rand = simulate(
+        entry_fee, payout1, payout2, payout3,
+        num_players, num_rounds, bonus,
+        strategy_dist, adaptive_memory, False)
+    if weighted_draw:
+        summary_wt, profits_wt, rounds_wt = simulate(
+            entry_fee, payout1, payout2, payout3,
+            num_players, num_rounds, bonus,
+            strategy_dist, adaptive_memory, True)
     st.success("✅ Simulation complete!")
 
-    st.subheader("📊 Simulation Summary")
-    st.dataframe(summary_df)
+    # Summary comparison
+    st.subheader("📊 Summary Comparison")
+    if weighted_draw:
+        comp = pd.concat([
+            summary_rand.assign(Mode="Random"),
+            summary_wt.assign(Mode="Weighted")
+        ])
+        st.dataframe(comp)
+        st.subheader("⚖️ EV vs Actual Return vs House Edge")
+        comp_chart = comp.set_index("Mode")[
+            ["Expected Value per Ticket (₹)", "Actual Avg Return per Ticket (₹)", "Net House Profit (₹)"]]
+        st.bar_chart(comp_chart)
+    else:
+        st.dataframe(summary_rand)
 
-    st.subheader("📈 Player Profit Distribution")
-    fig, ax = plt.subplots()
-    ax.hist(profits_array, bins=50, color='skyblue', edgecolor='black')
-    ax.set_title("Player Profits Histogram")
-    ax.set_xlabel("Net Profit (₹)")
-    ax.set_ylabel("Number of Players")
-    st.pyplot(fig)
+    # Profit distribution
+    st.subheader("📈 Player Profit Distribution (Random)")
+    fig1, ax1 = plt.subplots()
+    ax1.hist(profits_rand, bins=50, edgecolor='black')
+    st.pyplot(fig1)
+    if weighted_draw:
+        st.subheader("📈 Player Profit Distribution (Weighted)")
+        fig2, ax2 = plt.subplots()
+        ax2.hist(profits_wt, bins=50, edgecolor='black')
+        st.pyplot(fig2)
 
+    # House edge over rounds
     st.subheader("📉 Round-wise House Edge (%)")
-    st.line_chart(round_df.set_index("Round")["House Edge (%)"])
+    st.line_chart(rounds_rand.set_index("Round")["House Edge (%)"])
+    if weighted_draw:
+        st.line_chart(rounds_wt.set_index("Round")["House Edge (%)"])
 
-    st.subheader("⬇ Download Results")
-    st.download_button("Download Summary", summary_df.to_csv(index=False), file_name="summary.csv")
-    st.download_button("Download Round Breakdown", round_df.to_csv(index=False), file_name="rounds.csv")
+    # Download buttons
+    st.subheader("⬇ Download CSVs")
+    st.download_button("Download Random Summary", summary_rand.to_csv(index=False), file_name="random_summary.csv")
+    if weighted_draw:
+        st.download_button("Download Weighted Summary", summary_wt.to_csv(index=False), file_name="weighted_summary.csv")
+        st.download_button("Download Random Rounds", rounds_rand.to_csv(index=False), file_name="random_rounds.csv")
+        st.download_button("Download Weighted Rounds", rounds_wt.to_csv(index=False), file_name="weighted_rounds.csv")

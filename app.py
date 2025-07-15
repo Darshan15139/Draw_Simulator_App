@@ -1,4 +1,4 @@
-
+# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -6,58 +6,90 @@ import matplotlib.pyplot as plt
 import math
 import json
 import os
+import random
 
 PRESET_FILE = "presets.json"
 
-# Load presets
+# Load presets from file
 def load_presets():
     if os.path.exists(PRESET_FILE):
         with open(PRESET_FILE, "r") as f:
             return json.load(f)
     return {}
 
-# Save updated presets
+# Save presets to file
 def save_presets(presets):
     with open(PRESET_FILE, "w") as f:
         json.dump(presets, f, indent=2)
 
-# Calculate theoretical match probabilities
+# Match probabilities for reference
 def calculate_probabilities():
     total_combinations = math.comb(100, 3)
-    prob_0 = math.comb(91, 3) / total_combinations
-    prob_1 = (math.comb(9, 1) * math.comb(91, 2)) / total_combinations
-    prob_2 = (math.comb(9, 2) * math.comb(91, 1)) / total_combinations
-    prob_3 = math.comb(9, 3) / total_combinations
     return {
-        "0 Matches": round(prob_0, 5),
-        "1 Match": round(prob_1, 5),
-        "2 Matches": round(prob_2, 5),
-        "3 Matches": round(prob_3, 5)
+        "0 Matches": round(math.comb(91, 3) / total_combinations, 5),
+        "1 Match": round((math.comb(9, 1) * math.comb(91, 2)) / total_combinations, 5),
+        "2 Matches": round((math.comb(9, 2) * math.comb(91, 1)) / total_combinations, 5),
+        "3 Matches": round(math.comb(9, 3) / total_combinations, 5)
     }
 
-# Simulation logic with optional bonus
-def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonus=False):
-    number_pool = np.arange(1, 101)
+# Player strategy pickers
+def pick_numbers(strategy, pool, recent_draws=None):
+    if strategy == "fixed":
+        return pool[:3]
+    elif strategy == "rotate":
+        return random.sample(pool, 3)
+    elif strategy == "adaptive" and recent_draws:
+        avoid = set().union(*recent_draws)
+        available = [n for n in range(1, 101) if n not in avoid]
+        return random.sample(available, 3)
+    elif strategy == "pattern":
+        return [random.randint(1, 33), random.randint(34, 66), random.randint(67, 100)]
+    else:
+        return random.sample(range(1, 101), 3)
+
+# Simulate with player types and adaptive logic
+def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonus, strategy_dist, adaptive_memory):
     payouts = {1: payout1, 2: payout2, 3: payout3}
-    player_choices = [np.random.choice(number_pool, 3, replace=False) for _ in range(num_players)]
+    number_pool = np.arange(1, 101)
+    strategies = []
+    player_pools = []
+    recent_draws = []
+
+    for strategy, pct in strategy_dist.items():
+        count = int(num_players * pct / 100)
+        for _ in range(count):
+            strategies.append(strategy)
+            if strategy == "fixed":
+                player_pools.append(random.sample(range(1, 101), 3))
+            elif strategy == "rotate":
+                player_pools.append(random.sample(range(1, 101), 10))
+            else:
+                player_pools.append([])
+
     profits = np.zeros(num_players)
+    strategy_profit = {k: [] for k in strategy_dist.keys()}
     round_summary = []
 
     for rnd in range(1, num_rounds + 1):
-        draw = np.random.choice(number_pool, 9, replace=False)
+        draw = random.sample(range(1, 101), 9)
+        recent_draws.append(draw)
+        if len(recent_draws) > adaptive_memory:
+            recent_draws.pop(0)
+
         round_profit = 0
         for i in range(num_players):
-            match = len(set(player_choices[i]) & set(draw))
+            picks = pick_numbers(strategies[i], player_pools[i], recent_draws)
+            match = len(set(picks) & set(draw))
             reward = payouts.get(match, 0)
-            if bonus and rnd % 5 == 0:  # Example bonus: every 5th round
+            if bonus and rnd % 5 == 0:
                 reward *= 1.2
             net = reward - entry_fee
             profits[i] += net
+            strategy_profit[strategies[i]].append(net)
             round_profit += net
+
         round_summary.append({
             "Round": rnd,
-            "Total Spent": num_players * entry_fee,
-            "Total Payout": round_profit + (num_players * entry_fee),
             "Net House Profit": -round_profit,
             "House Edge (%)": round((-round_profit / (num_players * entry_fee)) * 100, 2)
         })
@@ -69,73 +101,55 @@ def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonu
         "Total Returned (₹)": round(profits.sum() + num_players * num_rounds * entry_fee, 2),
         "Net House Profit (₹)": round(-(profits.sum()), 2),
         "Avg Profit per Player (₹)": round(profits.mean(), 2),
-        "Players in Profit": np.sum(profits > 0),
-        "Players in Loss": np.sum(profits < 0),
-        "Players Breakeven": np.sum(profits == 0)
+        "Expected Value per Ticket (₹)": round((calculate_probabilities()["1 Match"] * payout1 + calculate_probabilities()["2 Matches"] * payout2 + calculate_probabilities()["3 Matches"] * payout3) - entry_fee, 2),
+        "Actual Avg Return per Ticket (₹)": round(profits.sum() / (num_players * num_rounds), 2),
     }
+    for k in strategy_profit:
+        summary[f"Avg Profit - {k}"] = round(np.mean(strategy_profit[k]), 2) if strategy_profit[k] else 0
 
-    
-    # Calculate expected return per ticket
-    probs = calculate_probabilities()
-    ev_per_ticket = (
-        probs["1 Match"] * payout1 +
-        probs["2 Matches"] * payout2 +
-        probs["3 Matches"] * payout3
-    ) - entry_fee
-    summary["Expected Value per Ticket (₹)"] = round(ev_per_ticket, 2)
-    summary["Actual Avg Return per Ticket (₹)"] = round(profits.sum() / (num_players * num_rounds), 2)
     return pd.DataFrame([summary]), profits, pd.DataFrame(round_summary)
-    
 
-# Streamlit App
-st.title("🎯 Number Draw Simulation Tool")
+# Streamlit UI
+st.title("🎯 Number Draw Simulator with Strategy Behaviors")
 
 with st.expander("ℹ️ Match Probability Reference"):
     st.write(pd.DataFrame(calculate_probabilities().items(), columns=["Match Count", "Probability"]))
 
 presets = load_presets()
-
-# Admin controls
-st.sidebar.header("🛠 Admin Configuration")
 selected = st.sidebar.selectbox("Choose Preset", list(presets.keys()))
 preset = presets[selected]
-st.sidebar.write(preset)
 
-st.sidebar.subheader("💾 Create Custom Preset")
-with st.sidebar.form("custom_preset_form"):
-    new_name = st.text_input("Preset Name")
-    new_entry = st.number_input("Entry Fee", min_value=1, value=20)
-    new_p1 = st.number_input("1 Match Payout", min_value=0, value=25)
-    new_p2 = st.number_input("2 Match Payout", min_value=0, value=200)
-    new_p3 = st.number_input("3 Match Payout", min_value=0, value=250)
-    save_it = st.form_submit_button("Save Preset")
-    if save_it and new_name:
-        presets[new_name] = {"entry": new_entry, "p1": new_p1, "p2": new_p2, "p3": new_p3}
-        save_presets(presets)
-        st.sidebar.success(f"Preset '{new_name}' saved!")
+st.sidebar.subheader("🧠 Player Strategy Distribution (%)")
+strategy_dist = {
+    "fixed": st.sidebar.slider("Fixed", 0, 100, 20),
+    "rotate": st.sidebar.slider("Rotate", 0, 100, 20),
+    "adaptive": st.sidebar.slider("Adaptive", 0, 100, 20),
+    "random": st.sidebar.slider("Random", 0, 100, 20),
+    "pattern": st.sidebar.slider("Pattern", 0, 100, 20)
+}
+total_pct = sum(strategy_dist.values())
+
+if total_pct != 100:
+    st.sidebar.error("Strategy percentages must sum to 100%")
+
+adaptive_memory = st.sidebar.number_input("Adaptive Memory (Rounds)", min_value=1, max_value=20, value=5)
 
 with st.form("sim_form"):
-    tier = st.selectbox("Select Tier", ["Tier 1 (₹10)", "Tier 2 (₹50)", "Tier 3 (₹100)"])
-    if tier == "Tier 1 (₹10)":
-        entry_fee = 10
-    elif tier == "Tier 2 (₹50)":
-        entry_fee = 50
-    else:
-        entry_fee = 100
-
-    payout1 = st.number_input("1 Match Payout", value=preset['p1'])
-    payout2 = st.number_input("2 Match Payout", value=preset['p2'])
-    payout3 = st.number_input("3 Match Payout", value=preset['p3'])
+    entry_fee = st.number_input("Entry Fee (₹)", value=preset['entry'])
+    payout1 = st.number_input("1 Match Payout (₹)", value=preset['p1'])
+    payout2 = st.number_input("2 Match Payout (₹)", value=preset['p2'])
+    payout3 = st.number_input("3 Match Payout (₹)", value=preset['p3'])
     num_players = st.number_input("Number of Players", value=1000)
     num_rounds = st.number_input("Number of Rounds", value=100)
-    bonus_round = st.checkbox("Enable Bonus on every 5th round (+20%)")
+    bonus = st.checkbox("Enable 20% Bonus every 5th round")
     submitted = st.form_submit_button("Run Simulation")
 
-if submitted:
+if submitted and total_pct == 100:
     st.info("Running simulation... please wait ⏳")
-    summary_df, profits_array, round_df = simulate(entry_fee, payout1, payout2, payout3, int(num_players), int(num_rounds), bonus_round)
+    summary_df, profits_array, round_df = simulate(entry_fee, payout1, payout2, payout3, int(num_players), int(num_rounds), bonus, strategy_dist, adaptive_memory)
     st.success("✅ Simulation complete!")
-    st.subheader("📊 Summary")
+
+    st.subheader("📊 Simulation Summary")
     st.dataframe(summary_df)
 
     st.subheader("📈 Player Profit Distribution")
@@ -146,9 +160,9 @@ if submitted:
     ax.set_ylabel("Number of Players")
     st.pyplot(fig)
 
-    st.subheader("📉 Round-wise House Profit")
-    st.line_chart(round_df.set_index("Round")["Net House Profit"])
+    st.subheader("📉 Round-wise House Edge (%)")
+    st.line_chart(round_df.set_index("Round")["House Edge (%)"])
 
-    st.subheader("⬇ Download CSV")
+    st.subheader("⬇ Download Results")
     st.download_button("Download Summary", summary_df.to_csv(index=False), file_name="summary.csv")
     st.download_button("Download Round Breakdown", round_df.to_csv(index=False), file_name="rounds.csv")

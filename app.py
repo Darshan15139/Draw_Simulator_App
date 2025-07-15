@@ -74,7 +74,18 @@ def simulate(entry_fee, payout1, payout2, payout3, num_players, num_rounds, bonu
         "Players Breakeven": np.sum(profits == 0)
     }
 
+    
+    # Calculate expected return per ticket
+    probs = calculate_probabilities()
+    ev_per_ticket = (
+        probs["1 Match"] * payout1 +
+        probs["2 Matches"] * payout2 +
+        probs["3 Matches"] * payout3
+    ) - entry_fee
+    summary["Expected Value per Ticket (₹)"] = round(ev_per_ticket, 2)
+    summary["Actual Avg Return per Ticket (₹)"] = round(profits.sum() / (num_players * num_rounds), 2)
     return pd.DataFrame([summary]), profits, pd.DataFrame(round_summary)
+    
 
 # Streamlit App
 st.title("🎯 Number Draw Simulation Tool")

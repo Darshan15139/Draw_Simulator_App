@@ -142,7 +142,16 @@ with st.form("sim_form"):
     num_players = st.number_input("Number of Players", value=1000)
     num_rounds = st.number_input("Number of Rounds", value=100)
     bonus = st.checkbox("Enable 20% Bonus every 5th round")
-    submitted = st.form_submit_button("Run Simulation")
+    col1, col2 = st.columns(2)
+    submitted = col1.form_submit_button("Run Simulation")
+    save_preset = col2.form_submit_button("💾 Save As Preset")
+
+if save_preset:
+    name = st.text_input("Enter name for new preset", key="preset_name")
+    if name:
+        presets[name] = {"entry": entry_fee, "p1": payout1, "p2": payout2, "p3": payout3}
+        save_presets(presets)
+        st.toast(f"Preset '{name}' saved successfully.", icon="💾")
 
 if submitted and total_pct == 100:
     st.info("Running simulation... please wait ⏳")
